@@ -1,0 +1,220 @@
+name: Build XAUUSD M1 Trading APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Find and extract application project
+        run: |
+          mkdir -p extracted
+
+          PROJECT_FOUND=false
+
+          while IFS= read -r ZIP_FILE; do
+            echo "Checking ZIP: $ZIP_FILE"
+
+            TEMP_DIR="check_zip"
+
+            rm -rf "$TEMP_DIR"
+            mkdir -p "$TEMP_DIR"
+
+            unzip -q "$ZIP_FILE" -d "$TEMP_DIR" || continue
+
+            PACKAGE_FILE=$(find "$TEMP_DIR" \
+              -type f \
+              -name "package.json" \
+              -not -path "*/node_modules/*" \
+              | head -n 1)
+
+            if [ -n "$PACKAGE_FILE" ]; then
+              echo "Application project found in: $ZIP_FILE"
+
+              rm -rf extracted
+              mv "$TEMP_DIR" extracted
+
+              echo "PACKAGE_FILE=$PACKAGE_FILE" >> $GITHUB_ENV
+
+              PROJECT_FOUND=true
+              break
+            fi
+
+          done < <(find . -maxdepth 3 -type f -iname "*.zip")
+
+          if [ "$PROJECT_FOUND" = false ]; then
+            echo "ERROR: No ZIP containing package.json was found"
+            exit 1
+          fi
+
+
+      - name: Find application directory
+        run: |
+          PACKAGE_FILE=$(find extracted \
+            -type f \
+            -name "package.json" \
+            -not -path "*/node_modules/*" \
+            | head -n 1)
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "ERROR: package.json not found"
+            exit 1
+          fi
+
+          APP_DIR=$(dirname "$PACKAGE_FILE")
+
+          echo "APP_DIR=$APP_DIR" >> $GITHUB_ENV
+
+          echo "Application directory:"
+          echo "$APP_DIR"
+
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+
+      - name: Install dependencies
+        run: |
+          cd "$APP_DIR"
+          npm install
+
+
+      - name: Build web application
+        run: |
+          cd "$APP_DIR"
+
+          if npm run | grep -q "build"; then
+            echo "Build script found"
+            npm run build
+          else
+            echo "No build script found"
+          fi
+
+
+      - name: Find web assets
+        run: |
+          cd "$APP_DIR"
+
+          WEB_DIR=""
+
+          for DIR in dist build www out; do
+            if [ -f "$DIR/index.html" ]; then
+              WEB_DIR="$DIR"
+              break
+            fi
+          done
+
+          if [ -z "$WEB_DIR" ]; then
+            INDEX_FILE=$(find . \
+              -path "./node_modules" -prune -o \
+              -path "./android" -prune -o \
+              -name "index.html" \
+              -type f \
+              -print | head -n 1)
+
+            if [ -n "$INDEX_FILE" ]; then
+              WEB_DIR=$(dirname "$INDEX_FILE")
+            fi
+          fi
+
+          if [ -z "$WEB_DIR" ]; then
+            echo "ERROR: index.html not found"
+            exit 1
+          fi
+
+          echo "WEB_DIR=$WEB_DIR" >> $GITHUB_ENV
+
+          echo "Web directory:"
+          echo "$WEB_DIR"
+
+
+      - name: Prepare Capacitor web directory
+        run: |
+          cd "$APP_DIR"
+
+          rm -rf capacitor-web
+          mkdir -p capacitor-web
+
+          cp -R "$WEB_DIR"/. capacitor-web/
+
+          if [ ! -f "capacitor-web/index.html" ]; then
+            echo "ERROR: index.html was not copied"
+            exit 1
+          fi
+
+          echo "Web assets prepared successfully"
+
+
+      - name: Install Capacitor
+        run: |
+          cd "$APP_DIR"
+
+          npm install \
+            @capacitor/core \
+            @capacitor/cli \
+            @capacitor/android
+
+
+      - name: Create Capacitor configuration
+        run: |
+          cd "$APP_DIR"
+
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.xauusd.m1tradingapp",
+            "appName": "XAUUSD M1 Trading App",
+            "webDir": "capacitor-web"
+          }
+          EOF
+
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+
+      - name: Add Android platform
+        run: |
+          cd "$APP_DIR"
+
+          if [ ! -d "android" ]; then
+            npx cap add android
+          else
+            echo "Android project already exists"
+          fi
+
+
+      - name: Sync Android
+        run: |
+          cd "$APP_DIR"
+
+          npx cap sync android
+
+
+      - name: Build Android APK
+        run: |
+          cd "$APP_DIR/android"
+
+          chmod +x gradlew
+
+          ./gradlew assembleDebug
+
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XAUUSD-M1-TRADING-APP-2026-APK
+          path: |
+            **/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
