@@ -1,0 +1,44 @@
+name: Build XAUUSD M1 Trading APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Find and extract application project
+        run: |
+          mkdir -p extracted
+
+          PROJECT_FOUND=false
+
+          while IFS= read -r ZIP_FILE; do
+            echo "Checking ZIP: $ZIP_FILE"
+
+            TEMP_DIR="check_zip"
+
+            rm -rf "$TEMP_DIR"
+            mkdir -p "$TEMP_DIR"
+
+            unzip -q "$ZIP_FILE" -d "$TEMP_DIR" || continue
+
+            PACKAGE_FILE=$(find "$TEMP_DIR" \
+              -type f \
+              -name "package.json" \
+              -not -path "*/node_modules/*" \
+              | head -n 1)
+
+            if [ -n "$PACKAGE_FILE" ]; then
+              echo "Application project found in: $ZIP_FILE"
+
+              rm -rf extracted
+              mv "$TEMP_DIR" extracted
+
+             
