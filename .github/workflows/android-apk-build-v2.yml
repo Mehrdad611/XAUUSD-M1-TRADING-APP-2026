@@ -1,0 +1,139 @@
+name: Build XAUUSD M1 Trading APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: دریافت فایل‌های مخزن
+        uses: actions/checkout@v4
+
+      - name: بررسی فایل‌های پروژه
+        run: |
+          echo "Files in repository:"
+          find . -maxdepth 3 -type f | sort
+
+      - name: پیدا کردن پروژه
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "package.json" ]; then
+            echo "APP_DIR=." >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" -not -path "./.git/*" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: package.json or project ZIP not found"
+            exit 1
+          fi
+
+          echo "ZIP: $ZIP_FILE"
+
+          mkdir -p project
+          unzip -q "$ZIP_FILE" -d project
+
+          PACKAGE_FILE=$(find project \
+            -type f \
+            -name "package.json" \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.vercel/*" \
+            | head -n 1)
+
+          if [ -z "$PACKAGE_FILE" ]; then
+            echo "ERROR: package.json not found inside ZIP"
+            exit 1
+          fi
+
+          APP_DIR=$(dirname "$PACKAGE_FILE")
+
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+
+      - name: نصب Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: نصب وابستگی‌ها
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: ساخت نسخه وب
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run build
+
+      - name: آماده‌سازی Capacitor
+        working-directory: ${{ env.APP_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf capacitor-web
+
+          if [ -d "dist" ]; then
+            cp -R dist capacitor-web
+          elif [ -d ".output/public" ]; then
+            cp -R .output/public capacitor-web
+          elif [ -d "build" ]; then
+            cp -R build capacitor-web
+          else
+            echo "ERROR: Web build output not found"
+            exit 1
+          fi
+
+          test -f capacitor-web/index.html
+
+      - name: نصب Capacitor
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+
+      - name: ایجاد تنظیمات Capacitor
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          cat > capacitor.config.ts <<'EOF'
+          import type { CapacitorConfig } from '@capacitor/cli';
+
+          const config: CapacitorConfig = {
+            appId: 'com.xauusd.m1tradingapp',
+            appName: 'XAUUSD M1 Trading App',
+            webDir: 'capacitor-web'
+          };
+
+          export default config;
+          EOF
+
+      - name: ایجاد پروژه Android
+        working-directory: ${{ env.APP_DIR }}
+        run: npx cap add android
+
+      - name: همگام‌سازی Capacitor
+        working-directory: ${{ env.APP_DIR }}
+        run: npx cap sync android
+
+      - name: ساخت APK
+        working-directory: ${{ env.APP_DIR }}/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: ذخیره APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XAUUSD-M1-TRADING-APP-2026-APK
+          path: ${{ env.APP_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
